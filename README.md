@@ -1,5 +1,10 @@
 # ClientProof
 
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](backend/pyproject.toml)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](frontend/package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](frontend/package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+
 Клиентский портал для небольшого агентства. Здесь можно передать клиенту результат работы, обсудить правки и сохранить решение по каждой версии.
 
 Сотрудник создаёт проект, загружает файлы и публикует версию. Клиент входит по коду из письма, оставляет комментарий и выбирает «Принять» или «На доработку». Когда работа обновляется, её публикуют новой версией. Предыдущее обсуждение и решение остаются в истории.
@@ -176,6 +181,4 @@ Engine/SQS, Cloudflare Images и Stream для согласования не т�
 
 ## Лицензия
 
-ClientProof основан на [dim-pan/the-saas-template](https://github.com/dim-pan/the-saas-template), MIT, copyright 2026 dim-pan и contributors. Исходная лицензия и уведомления об авторских правах сохранены.
-
-[MIT License](LICENSE) · [Исходная база](docs/upstream/source_manifest.json) · [История изменений](CHANGELOG.md)
+[MIT License](LICENSE) · [История изменений](CHANGELOG.md)
