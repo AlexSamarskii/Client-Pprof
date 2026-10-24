@@ -1,0 +1,42 @@
+# Single source of truth for git pre-commit hooks across the monorepo.
+# Install once after cloning:  pre-commit install  (or: make install-dev)
+#
+# Hooks are intentionally fast (target <2s total). Heavy checks like pyright
+# and tsc run in `make lint` / CI, not on every commit.
+
+repos:
+  # Python: backend + engine
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.6
+    hooks:
+      - id: ruff
+        files: ^(backend|engine)/.*\.(py|pyi)$
+        args: [--fix]
+      - id: ruff-format
+        files: ^(backend|engine)/.*\.(py|pyi)$
+
+  # Frontend: prettier + eslint via the project's own pnpm install.
+  # `local` hooks shell out so they share the exact pinned versions in
+  # frontend/package.json (no double-install / version drift).
+  #
+  # `pass_filenames: false` + tool-level `--cache` is the standard pattern
+  # here: the `files:` regex still gates whether the hook fires (only when
+  # matching frontend files change), but the command lints the whole tree
+  # so we don't have to reconcile pre-commit's repo-rooted paths with the
+  # tool's frontend-rooted cwd. The cache makes repeat runs near-instant.
+  - repo: local
+    hooks:
+      - id: prettier-frontend
+        name: prettier (frontend)
+        language: system
+        pass_filenames: false
+        entry: bash -c 'cd frontend && pnpm exec prettier --write --cache --ignore-unknown .'
+        files: ^frontend/.*\.(ts|tsx|js|jsx|mjs|cjs|json|md|css|html)$
+        exclude: ^frontend/(pnpm-lock\.yaml|dist/|node_modules/)
+
+      - id: eslint-frontend
+        name: eslint (frontend)
+        language: system
+        pass_filenames: false
+        entry: bash -c 'cd frontend && pnpm exec eslint --fix --cache .'
+        files: ^frontend/src/.*\.(ts|tsx)$

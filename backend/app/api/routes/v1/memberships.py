@@ -1,0 +1,285 @@
+import datetime
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, EmailStr, RootModel, field_validator
+from supabase import Client
+
+from app.api.deps import get_supabase_client
+from app.api.org_deps import OrgRoleContext, require_org_role
+from app.auth.deps import get_current_user
+from app.database.memberships import MembershipRole, MembershipsHandler
+from app.database.types_autogen import PublicMemberships, PublicUsers
+
+__all__ = [
+    'MembershipRole',
+    'MembershipResult',
+    'MembershipListResult',
+    'UpdateMembershipRoleRequest',
+    'InviteMembershipRequest',
+    'AcceptMembershipInviteRequest',
+    'router',
+]
+
+
+# API contract models (request/response) - keep these at the top for readability.
+class MembershipResult(PublicMemberships):
+    pass
+
+
+class MembershipListResult(RootModel[list[MembershipResult]]):
+    pass
+
+
+class UpdateMembershipRoleRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    role: MembershipRole
+
+    @field_validator('role', mode='before')
+    @classmethod
+    def _normalize_role(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+
+class InviteMembershipRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    email: EmailStr
+    role: MembershipRole = MembershipRole.member
+
+    @field_validator('role', mode='before')
+    @classmethod
+    def _normalize_role(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+
+class AcceptMembershipInviteRequest(BaseModel):
+    invitation_id: str
+
+
+router = APIRouter(prefix='/org/{organization_id}', tags=['memberships'])
+
+
+def _can_manage_target(actor_role: str, target_role: str) -> bool:
+    if actor_role == MembershipRole.owner:
+        return True
+    if actor_role == MembershipRole.admin:
+        return target_role == MembershipRole.member
+    return False
+
+
+def _can_assign_role(actor_role: str, assigned_role: str) -> bool:
+    if actor_role == MembershipRole.owner:
+        return True
+    if actor_role == MembershipRole.admin:
+        return assigned_role == MembershipRole.member
+    return False
+
+
+@router.get('/memberships', response_model=MembershipListResult)
+def list_org_memberships(
+    organization_id: UUID,
+    db: Client = Depends(get_supabase_client),
+    ctx: OrgRoleContext = Depends(require_org_role(MembershipRole.member)),
+) -> MembershipListResult:
+    memberships = MembershipsHandler(db, organization_id=organization_id)
+    rows = memberships.list_items()
+    return MembershipListResult.model_validate(
+        [MembershipResult.model_validate(row, from_attributes=True) for row in rows]
+    )
+
+
+@router.get('/membership', response_model=MembershipResult)
+def get_my_membership(
+    organization_id: UUID,
+    db: Client = Depends(get_supabase_client),
+    ctx: OrgRoleContext = Depends(require_org_role(MembershipRole.member)),
+) -> MembershipResult:
+    if ctx.membership is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='User token required')
+    membership_row = ctx.membership
+    return MembershipResult.model_validate(membership_row, from_attributes=True)
+
+
+@router.patch('/memberships/{membership_id}', response_model=MembershipResult)
+def update_membership_role(
+    organization_id: UUID,
+    membership_id: UUID,
+    payload: UpdateMembershipRoleRequest,
+    db: Client = Depends(get_supabase_client),
+    ctx: OrgRoleContext = Depends(require_org_role(MembershipRole.admin)),
+) -> MembershipResult:
+    actor_membership = ctx.membership
+    if actor_membership is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='User token required')
+
+    memberships = MembershipsHandler(db, organization_id=organization_id)
+    existing_membership = memberships.get_item(membership_id)
+    if existing_membership is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Not found')
+
+    if not _can_manage_target(actor_membership.role, existing_membership.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Insufficient permissions',
+        )
+    if not _can_assign_role(actor_membership.role, payload.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Insufficient permissions',
+        )
+
+    is_demoting_owner = (
+        existing_membership.role == MembershipRole.owner and payload.role != MembershipRole.owner
+    )
+    if is_demoting_owner and not memberships.has_another_active_owner(
+        excluding_membership_id=membership_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Organization must have at least one owner',
+        )
+
+    updated = memberships.update_item(membership_id, {'role': payload.role.value})
+    return MembershipResult.model_validate(updated, from_attributes=True)
+
+
+@router.delete('/memberships/{membership_id}', response_model=MembershipResult)
+def delete_membership(
+    organization_id: UUID,
+    membership_id: UUID,
+    db: Client = Depends(get_supabase_client),
+    ctx: OrgRoleContext = Depends(require_org_role(MembershipRole.admin)),
+) -> MembershipResult:
+    actor_membership = ctx.membership
+    if actor_membership is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='User token required')
+
+    memberships = MembershipsHandler(db, organization_id=organization_id)
+    existing_membership = memberships.get_item(membership_id)
+    if existing_membership is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Not found')
+
+    if not _can_manage_target(actor_membership.role, existing_membership.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Insufficient permissions',
+        )
+
+    is_deleting_owner = existing_membership.role == MembershipRole.owner
+    if is_deleting_owner and not memberships.has_another_active_owner(
+        excluding_membership_id=membership_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Organization must have at least one owner',
+        )
+
+    deleted = memberships.delete_item(membership_id)
+    return MembershipResult.model_validate(deleted, from_attributes=True)
+
+
+@router.post('/memberships/invite', response_model=MembershipResult)
+def invite_membership(
+    organization_id: UUID,
+    payload: InviteMembershipRequest,
+    db: Client = Depends(get_supabase_client),
+    ctx: OrgRoleContext = Depends(require_org_role(MembershipRole.admin)),
+) -> MembershipResult:
+    actor_membership = ctx.membership
+    if actor_membership is None or ctx.user is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='User token required')
+
+    if not _can_assign_role(actor_membership.role, payload.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Insufficient permissions',
+        )
+
+    memberships = MembershipsHandler(db, organization_id=organization_id)
+    invite_email = payload.email.strip().lower()
+    for membership in memberships.list_items():
+        existing_email = (membership.invited_email or '').strip().lower()
+        if existing_email == invite_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='Invitation already exists for this email',
+            )
+
+    inserted = memberships.create_item(
+        {
+            'organization_id': organization_id,
+            'user_id': None,
+            'role': payload.role.value,
+            'invited_email': invite_email,
+            'invited_by_id': ctx.user.id,
+            'invitation_id': str(uuid4()),
+            'invitation_expires_at': datetime.datetime.now(datetime.UTC)
+            + datetime.timedelta(days=7),
+        }
+    )
+    return MembershipResult.model_validate(inserted, from_attributes=True)
+
+
+@router.post('/memberships/accept', response_model=MembershipResult)
+def accept_membership_invite(
+    organization_id: UUID,
+    payload: AcceptMembershipInviteRequest,
+    db: Client = Depends(get_supabase_client),
+    current_user: PublicUsers = Depends(get_current_user),
+) -> MembershipResult:
+    memberships = MembershipsHandler(db, organization_id=organization_id)
+    pending = memberships.get_item(payload.invitation_id, key='invitation_id')
+    if pending is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Invitation not found')
+
+    if pending.user_id is not None:
+        if pending.user_id == current_user.id:
+            return MembershipResult.model_validate(pending, from_attributes=True)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Invitation has already been accepted',
+        )
+
+    invited_email = (pending.invited_email or '').strip().lower()
+    current_email = (current_user.email or '').strip().lower()
+    if invited_email == '' or invited_email != current_email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Invitation email does not match current user',
+        )
+
+    now = datetime.datetime.now(datetime.UTC)
+    if pending.invitation_expires_at is not None and pending.invitation_expires_at < now:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Invitation has expired',
+        )
+
+    # Idempotent: if the user already belongs to this org, soft-delete the pending row
+    # and return the existing active membership.
+    existing_in_org = next(
+        (
+            m
+            for m in memberships.list_for_user(current_user.id)
+            if m.organization_id == organization_id
+        ),
+        None,
+    )
+    if existing_in_org is not None:
+        memberships.delete_item(pending.id)
+        return MembershipResult.model_validate(existing_in_org, from_attributes=True)
+
+    accepted = memberships.update_item(
+        pending.id,
+        {
+            'user_id': current_user.id,
+            'invited_email': None,
+            'invitation_id': None,
+            'invitation_expires_at': None,
+        },
+    )
+    return MembershipResult.model_validate(accepted, from_attributes=True)

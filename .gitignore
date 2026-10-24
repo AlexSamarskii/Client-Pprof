@@ -1,0 +1,67 @@
+# Local AI tooling, instructions and development orchestration.
+# These rules apply at every directory level; product source/tests remain public.
+.agent/
+.agents/
+.codex/
+.claude/
+.codegraph/
+AGENTS*.md
+CLAUDE*.md
+skills-lock.json
+.codexignore
+.codex.toml
+.codex.json
+codex.toml
+.mcp.json
+/docs/STARTER_SELECTION.md
+
+# Credentials and local environment configuration.
+.env
+.env.*
+.envrc
+.direnv/
+.npmrc
+.netrc
+.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies, toolchains and package-manager caches.
+.venv/
+node_modules/
+.pnpm-store/
+.npm/
+.npm-cache/
+.pnpm-cache/
+.uv-cache/
+.uv-python/
+.cache/
+
+# Python caches and build output.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated frontend/build output and verification reports.
+dist/
+*.tsbuildinfo
+.coverage*
+coverage/
+htmlcov/
+playwright-report/
+blob-report/
+test-results/
+playwright/.cache/
+playwright/.auth/
+*.log
+
+# Local editor and operating-system files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
